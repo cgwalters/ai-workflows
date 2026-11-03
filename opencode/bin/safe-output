@@ -1,0 +1,94 @@
+#!/usr/bin/env node
+// Minimal "safe outputs" tool, modeled on GitHub's gh-aw safe outputs
+// (https://github.github.com/gh-aw/reference/safe-outputs/): the agent
+// requests a side effect by writing structured output to a well-known
+// location, and a separate privileged job (which holds the API token)
+// executes it. The agent never sees a credential.
+//
+// Output is JSON (like gh-aw), so the privileged executor can validate
+// and dispatch on it: each call writes $SAFE_OUTPUTS_DIR/review.json
+// with {"type": "review", "body": "<markdown>"}. Review is the first
+// output type; extend only when a consumer pipeline actually needs
+// more.
+//
+// Usage:
+//   safe-output review < body.md
+//   safe-output review --file body.md
+//   echo 'body.md contents' | safe-output review
+//
+// Output lands in $SAFE_OUTPUTS_DIR/review.json (default
+// /tmp/agenthome-safe-outputs), which CI jobs declare as an artifact;
+// the post job reads it and posts it as an MR note.
+"use strict";
+
+const { readFileSync, writeFileSync, mkdirSync, statSync } = require("fs");
+const path = require("path");
+const { parseArgs } = require("util");
+
+const MAX_BODY_BYTES = 256 * 1024;
+const MIN_BODY_CHARS = 20;
+
+const USAGE = `usage: safe-output review [--file PATH | stdin]
+  Record the markdown body of a review comment. Write it to stdin or
+  pass a file with --file. Output goes to
+  $SAFE_OUTPUTS_DIR/review.json as {"type": "review", "body": ...}
+  for the privileged post job.`;
+
+function fail(msg) {
+  process.stderr.write(`safe-output: error: ${msg}\n${USAGE}\n`);
+  process.exit(1);
+}
+
+let options;
+try {
+  options = parseArgs({
+    allowPositionals: true,
+    options: {
+      file: { type: "string" },
+    },
+  });
+} catch (e) {
+  fail(e.message);
+}
+const [type, ...positionals] = options.positionals;
+if (type !== "review") {
+  fail(`unsupported output type ${JSON.stringify(type ?? "")}; only "review" is supported`);
+}
+if (positionals.length > 0) fail("unexpected arguments");
+
+let body;
+if (options.values.file !== undefined) {
+  const filePath = options.values.file;
+  if (filePath === "-") {
+    body = readFileSync(0, "utf8");
+  } else {
+    try {
+      const st = statSync(filePath);
+      if (!st.isFile()) fail(`not a regular file: ${filePath}`);
+      body = readFileSync(filePath, "utf8");
+    } catch (e) {
+      fail(`cannot read ${filePath}: ${e.message}`);
+    }
+  }
+} else {
+  body = readFileSync(0, "utf8");
+}
+
+body = body.trim();
+if (body.length < MIN_BODY_CHARS) {
+  // Catch placeholder output like "test" (gh-aw does the same).
+  fail(`body too short (${body.length} chars, need >= ${MIN_BODY_CHARS}); is this a placeholder?`);
+}
+if (Buffer.byteLength(body, "utf8") > MAX_BODY_BYTES) {
+  fail(`body too large (> ${MAX_BODY_BYTES} bytes)`);
+}
+
+const dir = process.env.SAFE_OUTPUTS_DIR || "/tmp/agenthome-safe-outputs";
+const outPath = path.join(dir, "review.json");
+try {
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(outPath, JSON.stringify({ type: "review", body }, null, 2) + "\n");
+} catch (e) {
+  fail(`cannot write ${outPath}: ${e.message}`);
+}
+process.stdout.write(`safe-output: recorded review comment (${body.length} chars) to ${outPath}\n`);

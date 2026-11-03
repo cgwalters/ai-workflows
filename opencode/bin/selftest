@@ -1,0 +1,58 @@
+#!/usr/bin/env bash
+# Self-test for the agenthome tree: verify the harness wiring, the
+# vendored configuration and the tooling work together. It runs at
+# the end of the container image build (Dockerfile.agenthome in
+# osci/images/universal_base_image) and from this repository's
+# agenthome-selftest CI job, so both exercise the same checks against
+# the same bits.
+set -euo pipefail
+
+# Locate the tree this script belongs to. Works for a checkout
+# (agenthome/bin/selftest) and for the image, where the tree is
+# installed at /usr/local/share/agenthome with bin/ symlinked into
+# /usr/local/bin (readlink -f resolves that symlink).
+self=$(readlink -f "$0")
+root=$(cd "$(dirname "$self")/.." && pwd)
+
+if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+    test "$XDG_CONFIG_HOME" = "$root"
+else
+    export XDG_CONFIG_HOME="$root"
+fi
+test -f "${root}/opencode/opencode.jsonc"
+ls "${root}/prompts/" > /dev/null
+command -v safe-output > /dev/null
+opencode --version
+git --version
+tar --version > /dev/null
+awk 'BEGIN { print "ok" }' > /dev/null
+
+# safe-output happy paths: --file and stdin both write the JSON
+# review record. Run in an isolated SAFE_OUTPUTS_DIR so the selftest
+# never leaves a stale review.json in the real output directory (which
+# would otherwise get baked into the image at build time).
+tmp=$(mktemp -d)
+trap 'rm -rf "$tmp"' EXIT
+export SAFE_OUTPUTS_DIR="${tmp}/safe-outputs"
+printf 'This review body is long enough to pass the placeholder check.\n' \
+    > "${tmp}/body.md"
+safe-output review --file "${tmp}/body.md"
+node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+if (r.type !== "review" || !r.body.includes("long enough to pass")) process.exit(1);
+' "$SAFE_OUTPUTS_DIR/review.json"
+cat "${tmp}/body.md" | safe-output review
+node -e '
+const r = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"));
+if (r.type !== "review" || !r.body.includes("long enough to pass")) process.exit(1);
+' "$SAFE_OUTPUTS_DIR/review.json"
+
+# safe-output rejections: wrong output type, placeholder-short body,
+# missing file, unexpected arguments.
+! safe-output create-pr < /dev/null 2> /dev/null
+! printf 'too short\n' | safe-output review 2> /dev/null
+! head -c 300000 /dev/zero | tr '\0' x | safe-output review 2> /dev/null
+! safe-output review --file /no/such/file 2> /dev/null
+! safe-output review extra args 2> /dev/null
+
+echo "agenthome selftest OK"

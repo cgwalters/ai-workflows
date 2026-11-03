@@ -1,0 +1,48 @@
+# Image for CI jobs that run AI agent actions with opencode —
+# merge request review is the first such action (PACKIT-5545). The
+# agent infrastructure (providers, prompts, safe-outputs tool) lives
+# in opencode/ in this repository; this container installs it as one
+# unit with the opencode harness. Consumers pin an immutable
+# commit-SHA tag (see opencode/README.md for the action contract).
+FROM fedora:44
+
+LABEL description="AI agent runner for CI (opencode + agenthome tree)"
+
+# Single userspace: node/npm for opencode, git for repository
+# inspection, tar and gawk for consumers' artifact handling. HOME is
+# /tmp from here on so npm state stays out of the root home and can
+# be removed, leaving the default user able to write there.
+ENV HOME=/tmp
+ARG OPENCODE_VERSION=2.0.32
+RUN dnf --assumeyes --nodocs --setopt=install_weak_deps=False install \
+        nodejs npm git tar gawk && \
+    dnf clean all
+
+# opencode v2 is only published as @opencode/cli on npm; the
+# opencode.ai install script and the `opencode-ai` package serve v1.
+RUN npm install --global @opencode/cli@${OPENCODE_VERSION} && \
+    rm -rf /tmp/.local /tmp/.npm
+
+# Install the agent tree. bin/ is symlinked into PATH, so the
+# selftest can locate the tree from its own path and the same layout
+# works from a checkout.
+COPY opencode/ opencode/
+RUN rm -rf /usr/local/share/agenthome && \
+    cp -a opencode /usr/local/share/agenthome && \
+    ln -sf /usr/local/share/agenthome/bin/safe-output /usr/local/bin/safe-output && \
+    ln -sf /usr/local/share/agenthome/bin/selftest /usr/local/bin/selftest
+
+# CI runners check out the repository as a different user (e.g. root
+# in the GitLab helper container) than this image's unprivileged
+# runtime user, which git rejects as "dubious ownership". This image
+# exists to inspect checked-out repositories, so trust them all.
+RUN git config --system --add safe.directory '*'
+
+ENV XDG_CONFIG_HOME=/usr/local/share/agenthome
+# Where the safe-output tool records agent-requested side effects;
+# declare this path as a CI artifact in generating jobs.
+ENV SAFE_OUTPUTS_DIR=/tmp/agenthome-safe-outputs
+# Unprivileged runtime user.
+USER 1001
+# Fail the build early if the harness, config or tooling is broken.
+RUN selftest

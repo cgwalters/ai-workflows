@@ -14,19 +14,13 @@ pipeline wants an agent to do against a repository checkout.
   A CI job passes the prompt verbatim as the user message.
 - `bin/safe-output` — minimal safe-outputs tool (see below).
 - `bin/selftest` — tree self-test, run at the end of the image build
-  and from this repository's agenthome-selftest CI job.
+  and usable from a checkout.
 
-The container image is **not built here**. It is built by
-[osci/images/universal_base_image](https://gitlab.cee.redhat.com/osci/images/universal_base_image)
-(`Dockerfile.agenthome`), derived from the OSCI `osci/python` base
-image (RHEL/UBI + Red Hat CAs + kerberos), which vendors this tree
-at a build-arg-pinned ref and publishes to
-`images.paas.redhat.com/osci/agenthome` with the same
-CalVer/commit-SHA tags as the rest of the OSCI image family. Pin the
-commit-SHA (or CalVer) tag rather than a moving ref, so a change to
-this tree or to the base images can never silently alter an action's
-behavior; the `AGENTHOME_REF` build arg in that repository is the
-deliberate knob for picking up agenthome changes.
+The container image is built here: `Containerfile.opencode`
+publishes `quay.io/jotnar/opencode` via the repository's
+build-and-push workflow. Pin an immutable commit-SHA tag rather than
+a moving ref, so a change to this tree or to the base image can
+never silently alter an action's behavior.
 
 ## Safe outputs
 
@@ -63,12 +57,12 @@ arbitrary API calls.
 ## Running an action from a GitLab CI job
 
 Preferred: the prebuilt container image,
-`images.paas.redhat.com/osci/agenthome:<commit-sha tag>`, built by
-osci/images/universal_base_image whenever its base images change and
-whenever the pinned `AGENTHOME_REF` into this tree is bumped:
+`quay.io/jotnar/opencode:<commit-sha tag>`, built by this
+repository's build-and-push workflow whenever the tree or the
+Containerfile changes:
 
     my-agent-action:
-      image: images.paas.redhat.com/osci/agenthome:<commit-sha-tag>
+      image: quay.io/jotnar/opencode:<commit-sha-tag>
       variables:
         ENMAAS_KEY: $MY_ENMAAS_KEY_VARIABLE
       script:
@@ -77,18 +71,17 @@ whenever the pinned `AGENTHOME_REF` into this tree is bumped:
         - opencode run --standalone --agent review \
             "$(cat "$XDG_CONFIG_HOME/prompts/review.md" task.txt)" --file mr.diff
 
-The image has `XDG_CONFIG_HOME` preset to the vendored `agenthome/`
+The image has `XDG_CONFIG_HOME` preset to the installed `agenthome/`
 tree, so opencode picks up the providers, agents, and prompts
 automatically; any prompt in `prompts/` or agent in `opencode/` can
-be invoked the same way. Pulling from images.paas.redhat.com requires
-an internal-capable runner (the same runners OSCI jobs already use).
-Pin the commit-SHA or CalVer tag rather than a moving ref, so a
-config change can never silently alter an action's behavior.
+be invoked the same way. Pin the commit-SHA tag rather than a moving
+ref, so a config change can never silently alter an action's
+behavior.
 
 Clone-based use (no image dependency) also works:
 
-    git clone --depth 1 -b <ref> <this repository> /tmp/agenthome-src
-    export XDG_CONFIG_HOME=/tmp/agenthome-src/agenthome
+    git clone --depth 1 -b <ref> https://github.com/packit/ai-workflows.git /tmp/agenthome-src
+    export XDG_CONFIG_HOME=/tmp/agenthome-src/opencode
     export ENMAAS_KEY="$MY_ENMAAS_KEY_VARIABLE"
     curl -fsSL https://opencode.ai/install | bash -s -- --no-modify-path
     export PATH="$HOME/.opencode/bin:$PATH"
